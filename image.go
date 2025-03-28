@@ -126,7 +126,7 @@ func processRasterImage(src image.Image) image.Image {
 	bounds := src.Bounds()
 	dst := image.NewGray(bounds)
 
-	var darkCount, lightCount, totalCount int
+	var totalCount int
 	colorHistogram := make(map[uint32]int)
 
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
@@ -140,26 +140,24 @@ func processRasterImage(src image.Image) image.Image {
 			g = g * 0xffff / a
 			b = b * 0xffff / a
 
-			gray := uint8(((299*r + 587*g + 114*b) / 1000) >> 8)
-
 			colorKey := (r>>12)<<16 | (g>>12)<<8 | (b >> 12)
 			colorHistogram[uint32(colorKey)]++
-
-			if gray < 64 {
-				darkCount++
-			} else if gray > 192 {
-				lightCount++
-			}
 			totalCount++
 		}
 	}
 
 	dominantColors := findDominantColors(colorHistogram, 3)
-	hasDistinctColorGroups := hasDistinctColorGroups(dominantColors, totalCount)
+	if len(dominantColors) == 0 {
+		return dst
+	}
 
-	yellowIsBackground := isYellowDominant(colorHistogram, totalCount)
-	blackIsFeature := darkCount < totalCount/5
-	inverseEngrave := yellowIsBackground && blackIsFeature
+	dominantColor := dominantColors[0].color
+	secondaryColor := uint32(0)
+	if len(dominantColors) > 1 {
+		secondaryColor = dominantColors[1].color
+	}
+
+	hasDistinctGroups := hasDistinctColorGroups(dominantColors, totalCount)
 
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
@@ -173,30 +171,20 @@ func processRasterImage(src image.Image) image.Image {
 			g = g * 0xffff / a
 			b = b * 0xffff / a
 
-			isYellow := r>>8 > 200 && g>>8 > 180 && b>>8 < 100
-			isBlack := r>>8 < 60 && g>>8 < 60 && b>>8 < 60
+			colorKey := (r>>12)<<16 | (g>>12)<<8 | (b >> 12)
 
-			var brightness uint8
+			var brightness uint8 = 255
 
-			if hasDistinctColorGroups && inverseEngrave {
-				if isYellow {
+			if hasDistinctGroups {
+				if isColorSimilar(uint32(colorKey), dominantColor) {
 					brightness = 0
-				} else if isBlack {
-					brightness = 255
-				} else {
-					brightness = uint8(((299*r + 587*g + 114*b) / 1000) >> 8)
-					brightness = 255 - brightness
+				} else if secondaryColor != 0 && isColorSimilar(uint32(colorKey), secondaryColor) {
+					brightness = 127
 				}
 			} else {
 				gray := uint8(((299*r + 587*g + 114*b) / 1000) >> 8)
-
-				if gray < 50 {
+				if gray < 128 {
 					brightness = 0
-				} else if gray > 230 {
-					brightness = 255
-				} else {
-					normalizedValue := float64(gray-50) / 180.0
-					brightness = uint8(normalizedValue * 255)
 				}
 			}
 
@@ -223,13 +211,9 @@ func findDominantColors(histogram map[uint32]int, count int) []struct {
 		}{color, count})
 	}
 
-	sort := func(i, j int) bool {
-		return colors[i].count > colors[j].count
-	}
-
 	for i := 0; i < len(colors)-1; i++ {
 		for j := i + 1; j < len(colors); j++ {
-			if sort(j, i) {
+			if colors[j].count > colors[i].count {
 				colors[i], colors[j] = colors[j], colors[i]
 			}
 		}
@@ -253,18 +237,20 @@ func hasDistinctColorGroups(dominantColors []struct {
 	return topTwoPercentage > 0.7
 }
 
-func isYellowDominant(histogram map[uint32]int, totalPixels int) bool {
-	yellowCount := 0
+func isColorSimilar(c1, c2 uint32) bool {
+	r1, g1, b1 := (c1>>16)&0xFF, (c1>>8)&0xFF, c1&0xFF
+	r2, g2, b2 := (c2>>16)&0xFF, (c2>>8)&0xFF, c2&0xFF
 
-	for color, count := range histogram {
-		r := (color >> 16) & 0xFF
-		g := (color >> 8) & 0xFF
-		b := color & 0xFF
+	rDiff := abs(int(r1) - int(r2))
+	gDiff := abs(int(g1) - int(g2))
+	bDiff := abs(int(b1) - int(b2))
 
-		if r > 10 && g > 10 && r > b*2 && g > b*2 {
-			yellowCount += count
-		}
+	return rDiff < 3 && gDiff < 3 && bDiff < 3
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
 	}
-
-	return float64(yellowCount)/float64(totalPixels) > 0.5
+	return x
 }
