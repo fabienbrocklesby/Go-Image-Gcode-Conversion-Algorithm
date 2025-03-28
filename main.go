@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	inputFile := flag.String("input", "", "Path to the input SVG file")
+	inputFile := flag.String("input", "", "Path to the input image file (SVG, PNG, JPEG)")
 	outputFile := flag.String("output", "output.gcode", "Path to output G-code file")
 	width := flag.Float64("width", 100.0, "Target engraving width (mm)")
 	height := flag.Float64("height", 100.0, "Target engraving height (mm)")
@@ -21,9 +21,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	img, err := LoadSVG(*inputFile)
+	img, err := LoadImage(*inputFile)
 	if err != nil {
-		log.Fatalf("failed to load SVG: %v", err)
+		log.Fatalf("failed to load image: %v", err)
 	}
 
 	gcode, err := ConvertToGCode(img, *width, *height, *offset, uint8(*threshold))

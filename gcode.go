@@ -48,7 +48,7 @@ func ConvertToGCode(img image.Image, targetWidth, targetHeight, offset float64, 
 		}
 
 		minX, minY, maxX, maxY := getBoundingBox(region.points)
-		fillOptimizedZigZag(minX, minY, maxX, maxY, region.points, offset, scaleX, scaleY, &sb)
+		fillOptimizedZigZag(img, bounds, minX, minY, maxX, maxY, region.points, offset, scaleX, scaleY, &sb)
 	}
 
 	sb.WriteString("M5\nG0 X0 Y0\n")
@@ -156,7 +156,7 @@ func extractFillRegions(img image.Image, threshold uint8) []Path {
 
 func isEdgePixel(img image.Image, bounds image.Rectangle, x, y int) bool {
 	gray := getGrayscale(img, bounds, x, y)
-	if gray >= 230 {
+	if gray >= 200 {
 		return false
 	}
 
@@ -172,7 +172,7 @@ func isEdgePixel(img image.Image, bounds image.Rectangle, x, y int) bool {
 		}
 
 		neighborGray := getGrayscale(img, bounds, nx, ny)
-		if neighborGray >= 230 {
+		if neighborGray >= 200 {
 			return true
 		}
 	}
@@ -295,13 +295,23 @@ func getBoundingBox(points []Point) (int, int, int, int) {
 	return minX, minY, maxX, maxY
 }
 
-func fillOptimizedZigZag(minX, minY, maxX, maxY int, points []Point, offset, scaleX, scaleY float64, sb *strings.Builder) {
-	pointMap := make(map[int]map[int]bool)
+func fillOptimizedZigZag(img image.Image, bounds image.Rectangle, minX, minY, maxX, maxY int, points []Point, offset, scaleX, scaleY float64, sb *strings.Builder) {
+	pointMap := make(map[int]map[int]int)
+
 	for _, p := range points {
 		if _, ok := pointMap[p.y]; !ok {
-			pointMap[p.y] = make(map[int]bool)
+			pointMap[p.y] = make(map[int]int)
 		}
-		pointMap[p.y][p.x] = true
+
+		gray := getGrayscale(img, bounds, p.x, p.y)
+		laserPower := 1000 - (gray * 3)
+		if laserPower < 200 {
+			laserPower = 200
+		} else if laserPower > 1000 {
+			laserPower = 1000
+		}
+
+		pointMap[p.y][p.x] = laserPower
 	}
 
 	lineSpacing := 3
@@ -314,7 +324,7 @@ func fillOptimizedZigZag(minX, minY, maxX, maxY int, points []Point, offset, sca
 
 		if fromRight {
 			for x := maxX; x >= minX; x-- {
-				if pointMap[y] != nil && pointMap[y][x] {
+				if _, exists := pointMap[y][x]; exists {
 					if startSegment == -1 {
 						startSegment = x
 					}
@@ -328,7 +338,7 @@ func fillOptimizedZigZag(minX, minY, maxX, maxY int, points []Point, offset, sca
 			}
 		} else {
 			for x := minX; x <= maxX; x++ {
-				if pointMap[y] != nil && pointMap[y][x] {
+				if _, exists := pointMap[y][x]; exists {
 					if startSegment == -1 {
 						startSegment = x
 					}
@@ -351,7 +361,8 @@ func fillOptimizedZigZag(minX, minY, maxX, maxY int, points []Point, offset, sca
 			startY := offset + float64(y)*scaleY
 			endX := offset + float64(seg.endX)*scaleX
 
-			sb.WriteString(fmt.Sprintf("G0 X%.3f Y%.3f\nM3 S1000\n", startX, startY))
+			power := pointMap[y][seg.startX]
+			sb.WriteString(fmt.Sprintf("G0 X%.3f Y%.3f\nM3 S%d\n", startX, startY, power))
 			sb.WriteString(fmt.Sprintf("G1 X%.3f Y%.3f\n", endX, startY))
 			sb.WriteString("M5\n")
 		}
@@ -359,9 +370,17 @@ func fillOptimizedZigZag(minX, minY, maxX, maxY int, points []Point, offset, sca
 }
 
 func getGrayscale(img image.Image, bounds image.Rectangle, x, y int) int {
-	r, g, b, _ := img.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
-	r8 := uint8(r >> 8)
-	g8 := uint8(g >> 8)
-	b8 := uint8(b >> 8)
-	return (299*int(r8) + 587*int(g8) + 114*int(b8)) / 1000
+	switch v := img.(type) {
+	case *image.Gray:
+		return int(v.GrayAt(bounds.Min.X+x, bounds.Min.Y+y).Y)
+	default:
+		r, g, b, a := img.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+		if a == 0 {
+			return 255
+		}
+		r = r * 0xffff / a
+		g = g * 0xffff / a
+		b = b * 0xffff / a
+		return int(((299*r + 587*g + 114*b) / 1000) >> 8)
+	}
 }
